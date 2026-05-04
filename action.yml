@@ -1,0 +1,100 @@
+name: 'Specific'
+description: 'Run Specific CLI commands in GitHub Actions, authenticated via OIDC.'
+branding:
+  icon: 'box'
+  color: 'purple'
+
+inputs:
+  command:
+    description: 'Command to run. v1 only supports "verify".'
+    required: true
+  version:
+    description: 'CLI version to install, or "latest".'
+    required: false
+    default: 'latest'
+  api-url:
+    description: 'Specific API base URL (override for staging/dev).'
+    required: false
+    default: 'https://api.specific.dev'
+  audience:
+    description: 'OIDC audience claim requested from GitHub.'
+    required: false
+    default: 'specific.dev'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve CLI version
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION=$(curl -fsSL https://binaries.specific.dev/cli/latest)
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        if [ -z "$VERSION" ]; then
+          echo "Error: failed to resolve CLI version" >&2
+          exit 1
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Restore CLI from cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/specific
+        key: specific-cli-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}
+
+    - name: Install CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        SPECIFIC_VERSION: ${{ steps.resolve.outputs.version }}
+      run: ${{ github.action_path }}/scripts/install.sh
+
+    - name: Add CLI to PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Validate command
+      shell: bash
+      run: |
+        case "${{ inputs.command }}" in
+          verify) ;;
+          *) echo "Error: unsupported command '${{ inputs.command }}'. v1 supports: verify" >&2; exit 1 ;;
+        esac
+
+    - name: Run verify
+      if: inputs.command == 'verify'
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api-url }}
+        AUDIENCE: ${{ inputs.audience }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "Error: OIDC token unavailable." >&2
+          echo "Add 'permissions: { id-token: write }' to the job." >&2
+          exit 1
+        fi
+
+        JWT=$(curl -fsSL \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          -H "Accept: application/json" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" \
+          | jq -r '.value')
+
+        if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+          echo "Error: empty OIDC token from GitHub" >&2
+          exit 1
+        fi
+
+        echo "Calling ${API_URL}/auth/github-oidc/whoami"
+        BODY=$(curl -fsSL --fail-with-body \
+          -H "Authorization: Bearer $JWT" \
+          -H "Accept: application/json" \
+          "${API_URL}/auth/github-oidc/whoami")
+        echo "$BODY" | jq .
