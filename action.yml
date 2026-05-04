@@ -15,7 +15,7 @@ inputs:
   api-url:
     description: 'Specific API base URL (override for staging/dev).'
     required: false
-    default: 'https://api.specific.dev'
+    default: 'https://api.prod.specific.dev'
   audience:
     description: 'OIDC audience claim requested from GitHub.'
     required: false
