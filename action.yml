@@ -81,20 +81,39 @@ runs:
           exit 1
         fi
 
+        echo "::group::Fetching GitHub OIDC token (audience: ${AUDIENCE})"
         JWT=$(curl -fsSL \
           -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
           -H "Accept: application/json" \
           "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" \
           | jq -r '.value')
-
         if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+          echo "::endgroup::"
           echo "Error: empty OIDC token from GitHub" >&2
           exit 1
         fi
+        echo "Got token (length: ${#JWT} chars)"
+        echo "Claims:"
+        printf '%s' "$JWT" | python3 -c 'import sys, json, base64; p = sys.stdin.read().strip().split(".")[1]; p += "=" * (-len(p) % 4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p)), indent=2))' \
+          || echo "(failed to decode JWT payload)"
+        echo "::endgroup::"
 
-        echo "Calling ${API_URL}/auth/github-oidc/whoami"
-        BODY=$(curl -fsSL --fail-with-body \
+        URL="${API_URL}/auth/github-oidc/whoami"
+        echo "::group::GET ${URL}"
+        BODY_FILE=$(mktemp)
+        HTTP_CODE=$(curl -sS -o "$BODY_FILE" -w '%{http_code}' \
           -H "Authorization: Bearer $JWT" \
           -H "Accept: application/json" \
-          "${API_URL}/auth/github-oidc/whoami")
-        echo "$BODY" | jq .
+          "$URL")
+        echo "HTTP ${HTTP_CODE}"
+        echo "Response body:"
+        if ! jq . "$BODY_FILE" 2>/dev/null; then
+          cat "$BODY_FILE"
+          echo
+        fi
+        echo "::endgroup::"
+
+        case "$HTTP_CODE" in
+          2*) echo "verify OK" ;;
+          *) echo "::error::whoami returned HTTP ${HTTP_CODE}"; exit 1 ;;
+        esac
